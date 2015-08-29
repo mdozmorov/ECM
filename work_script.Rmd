@@ -1,0 +1,163 @@
+---
+title: "New limma analysis of JBV J82 RT4 on SIS, Mat, and Plastic"
+author: "Mikhail G. Dozmorov"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+```{r setup, echo=FALSE, include=FALSE, cache=FALSE}
+# Set up the environment
+library(knitr) 
+opts_chunk$set(cache.path='cache/', fig.path='img/', cache=T, tidy=T, fig.keep='high', dpi=100,  echo=FALSE, autodep=T, width=200, warning=FALSE, comment=NA)
+options(replace.assign=TRUE, width=500)
+tidy.opts=list(width.cutoff=200)
+set.seed(1)
+# Libraries
+library(limma)
+library(dplyr)
+library(Biobase)
+library(affy)
+library(ReactomePA)
+library(DOSE)
+library(xlsx)
+library(biomaRt)
+mart <- useMart("ensembl", dataset="hsapiens_gene_ensembl")
+
+# Function plotting error bars. http://monkeysuncle.stanford.edu/?p=485
+error.bar <- function(x, y, upper, lower=upper, length=0.1,...){
+  if(length(x) != length(y) | length(y) !=length(lower) | length(lower) != length(upper))
+    stop("vectors must be same length")
+  arrows(x,y+upper, x, y-lower, angle=90, code=3, length=length, ...)
+}
+# Function to perform functional enrichment analysis
+source("/Users/mikhail/Documents/Work/GenomeRunner/MDmisc/R/gene_enrichment_hg19.R")
+```
+
+We have three cell lines, JBV, J82 and RT4, grown on three matrixes, Plastic, SISgel and Matrigel. One of the goals is to identify matrix-responsive genes, irrespectively of cell line.
+
+We use plastic as a 'reference', and compare Matrigel vs. plastic and SISgel vs. plastic
+
+```{r loadData}
+# Expression data
+targets <- readTargets("data/targets.txt") # Also contains cell/matrix assignments
+eset <- just.rma(filenames=targets$FileName)
+# Annotation data
+annot <- read.table("data/annot.txt", sep = "\t", as.is = T, header=T)
+```
+
+We use limma to identify matrix effect, using cell line information as blocking factor. The Venn diagram shows how Matrix- and SISgel-responsive genes overlap
+
+```{r limma}
+# Creating design matrix, accounting for batch effect
+matrix.effect <- factor(targets$Matrix)
+matrix.effect <- relevel(matrix.effect, ref="P")
+cell.effect <- factor(targets$Cell)
+design <- model.matrix(~matrix.effect+cell.effect)
+# Performing limma
+fit <- lmFit(eset, design)
+fit2 <- eBayes(fit)
+# How matrix effect genes overlap
+results <- decideTests(fit2)
+vennDiagram(results[, 2:3])
+```
+
+All, unique and common Matrigel- and SISgel-responsive genes are saved in the **"ECM.xlsx"** file.
+
+Among differentially expressed genes, how many are up- or downregulated?
+
+```{r DEGs}
+# Matrix-specific DEGs
+degs.m <- topTable(fit2, coef = "matrix.effectM", number = nrow(exprs(eset)), p.value = 0.05)
+degs.s <- topTable(fit2, coef = "matrix.effectS", number = nrow(exprs(eset)), p.value = 0.05)
+# Explore how many are up-down
+print("Matrigel genes, up in M as compared with plastic")
+nrow(degs.m[degs.m$logFC > 0, ])
+print("Matrigel genes, down in M as compared with plastic")
+nrow(degs.m[degs.m$logFC < 0, ])
+print("SISgel genes, up in S as compared with plastic")
+nrow(degs.s[degs.s$logFC > 0, ])
+print("SISgel genes, down in S as compared with plastic")
+nrow(degs.s[degs.s$logFC < 0, ])
+# Join with annotations
+degs.m <- left_join(data.frame(Probe=as.numeric(rownames(degs.m)), degs.m), annot, by=("Probe" = "Probe"))
+degs.s <- left_join(data.frame(Probe=as.numeric(rownames(degs.s)), degs.s), annot, by=("Probe" = "Probe"))
+# # Save the results
+# write.xlsx2(degs.m, "results/ECM.xlsx", sheetName = "Mat vs. Pla", row.names=F, append = T) # All Mat/SIS genes
+# write.xlsx2(degs.s, "results/ECM.xlsx", sheetName = "SIS vs. Pla", row.names=F, append = T)
+# write.xlsx2(degs.m[degs.m$Probe %in% setdiff(degs.m$Probe, degs.s$Probe), ], "results/ECM.xlsx", sheetName = "Mat unique", row.names=F, append = T) # Unique Mat/SIS genes
+# write.xlsx2(degs.s[degs.s$Probe %in% setdiff(degs.s$Probe, degs.m$Probe), ], "results/ECM.xlsx", sheetName = "SIS unique", row.names=F, append = T)
+# write.xlsx2(left_join(degs.m[degs.m$Probe %in% intersect(degs.s$Probe, degs.m$Probe), ], degs.s[degs.s$Probe %in% intersect(degs.s$Probe, degs.m$Probe), ], by=c("Probe" = "Probe")), "results/ECM.xlsx", sheetName = "Mat SIS common", row.names=F, append = T) # Common Mat/SIS genes
+```
+
+Plot of the gene most significantly different in Matrigel and SISgel.
+
+```{r}
+gene <- "8179564"
+gene.annot <- left_join(data.frame(Probe=as.numeric(gene)), annot, by=("Probe" = "Probe"))
+# Get median expression and SD per condition
+data.means <- list()
+data.sd <- list()
+for ( i in unique(targets$Cell)) {
+  for (j in unique(targets$Matrix)) {
+    data.means <- c(data.means, list(rowMedians(exprs(eset)[gene , targets$Cell == i & targets$Matrix == j, drop=F] )))
+    names(data.means)[length(data.means)] <- paste(i, j, sep=".")
+    data.sd <- c(data.sd, list(1.96*sd(exprs(eset)[gene , targets$Cell == i & targets$Matrix == j])/sqrt(length(exprs(eset)[gene , targets$Cell == i & targets$Matrix == j]))))
+    names(data.sd)[length(data.sd)] <- paste(i, j, sep=".")
+  }
+}
+data.means <- unlist(data.means)
+data.sd <- unlist(data.sd)
+data.sd[is.na(data.sd)] <- 0 # RT4 has only one replicate, so SD = 0
+# Plotting the barplot
+barx <- barplot(data.means, main=paste(gene.annot$Probe, gene.annot$GeneName, gene.annot$Desc, sep=","), ylim=c(min(data.means)-0.1*min(data.means), max(data.means+0.1*max(data.means))), xpd=F)
+error.bar(barx, data.means, data.sd)
+```
+
+We perform functional enrichment analysis on genes **commonly responding to Matrigel and SISgel, as compared to Plastic**. The results are in the corresponding worksheet in the **"ECM.xlsx"** file.
+
+```{r}
+# Create gene lists
+degs.ms <- unique(annot$GeneName[annot$Probe %in% as.numeric(intersect(degs.m$Probe, degs.s$Probe))])
+degs.ms <- degs.ms[degs.ms != ""]
+genes.all <- unique(annot$GeneName)
+genes.all <- genes.all[genes.all != ""]
+# Get their EntrezIDs
+degs.ms.entrez <- unique(getBM(attributes = c('entrezgene'), filters = 'hgnc_symbol', values = degs.ms, mart = mart, uniqueRows = TRUE))
+sum(is.na(degs.ms.entrez))
+genes.all.entrez <- unique(getBM(attributes = c('entrezgene'), filters = 'hgnc_symbol', values = genes.all, mart = mart, uniqueRows = TRUE))
+```
+
+MF - Molecular Function gene ontology
+
+```{r eval=FALSE}
+res <- Enrichment(degs.ms, all.universe = genes.all, id="symbol", use="GO", ont="MF")
+write.xlsx(res, "results/ECM.xlsx", sheetName = "MF", row.names=F, append = T)
+```
+
+BP - Biological Process gene ontology
+
+```{r eval=FALSE}
+res <- Enrichment(degs.ms, all.universe = genes.all, id="symbol", use="GO", ont="BP")
+write.xlsx(res, "results/ECM.xlsx", sheetName = "BP", row.names=F, append = T)
+```
+
+KEGG canonical pathways
+
+```{r eval=FALSE}
+res <- Enrichment(degs.ms, all.universe = genes.all, id="symbol", use="KEGG")
+write.xlsx(res, "results/ECM.xlsx", sheetName = "KEGG", row.names=F, append = T)
+```
+
+Reactome canonical pathways
+
+```{r eval=FALSE}
+res <- enrichPathway(gene = as.character(degs.ms.entrez[,]), universe = as.character(genes.all.entrez[,]), organism = "human", pAdjustMethod = "BH", pvalueCutoff = 0.1, qvalueCutoff = 0.2, readable = TRUE)
+write.xlsx(summary(res), "results/ECM.xlsx", sheetName = "Reactome",row.names=FALSE,  append = T)
+```
+
+DO - disease ontology, which diseases are enriched by genes
+
+```{r eval=FALSE}
+res <- enrichDO(gene = as.character(degs.ms.entrez[,]), universe = as.character(genes.all.entrez[,]), ont = "DO", pAdjustMethod = "none", pvalueCutoff = 0.1, qvalueCutoff = 0.2, readable = TRUE)
+write.xlsx(summary(res), "results/ECM.xlsx", sheetName = "DO",row.names=FALSE,  append = T)
+```
