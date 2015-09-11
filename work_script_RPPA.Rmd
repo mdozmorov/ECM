@@ -1,0 +1,32 @@
+---
+title: "New limma analysis of RPPA data"
+author: "Mikhail G. Dozmorov"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+```{r setup, echo=FALSE, include=FALSE, cache=FALSE}
+# Set up the environment
+library(knitr) 
+opts_chunk$set(cache.path='cache/', fig.path='img/', cache=T, tidy=T, fig.keep='high', dpi=100,  echo=FALSE, autodep=T, width=200, warning=FALSE, comment=NA)
+options(replace.assign=TRUE, width=500)
+tidy.opts=list(width.cutoff=200)
+set.seed(1)
+# Libraries
+library(limma)
+library(xlsx)
+```
+
+Read data in, and extract relevant pieces
+
+```{r}
+mtx <- read.xlsx2("data/RPPA Dormatarg MD analysis.00.xlsx", sheetName = "Raw log2", header = F)
+# Get design matrix
+mtx.design <- t(mtx[1:3, 2:ncol(mtx)])
+colnames(mtx.design) <- mtx[1:3, 1]
+# Get numerical data
+mtx.data <- as.matrix(mtx[4:nrow(mtx), 2:ncol(mtx)])
+rownames(mtx.data) <- mtx[4:nrow(mtx), 1]
+class(mtx.data) <- "numeric"
+```
+
